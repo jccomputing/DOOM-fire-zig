@@ -180,6 +180,7 @@ pub fn initTerm() !void {
     initColor();
     try initTermSize();
     try initRNG();
+    std.debug.print("random: {d}\n", .{rand.intRangeAtMost(u8, 0, 1)});
 }
 
 // initTerm(); defer complete();
