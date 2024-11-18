@@ -5,6 +5,7 @@
 //
 const builtin = @import("builtin");
 const std = @import("std");
+const libc = @import("libc");
 
 const allocator = std.heap.page_allocator;
 
