@@ -5,16 +5,18 @@
 //
 const builtin = @import("builtin");
 const std = @import("std");
+const Io = std.Io;
 
 const allocator = std.heap.page_allocator;
 
 var stdout_buffer: [1024]u8 = undefined;
-var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+var stdout_writer: std.Io.File.Writer = undefined;
 const stdout = &stdout_writer.interface;
 var stdin_buffer: [1024]u8 = undefined;
-var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+var stdin_reader: std.Io.File.Reader = undefined;
 const stdin = &stdin_reader.interface;
 var g_tty_win: win32.HANDLE = undefined;
+var io: std.Io = undefined;
 
 ///////////////////////////////////
 // Tested on M1 osx15.3, Windows 10 on Intel + Artix Linux.
@@ -105,7 +107,7 @@ pub fn initRNG() !void {
     var prng = try allocator.create(std.Random.DefaultPrng);
     prng.* = std.Random.DefaultPrng.init(blk: {
         var seed: u64 = undefined;
-        try std.posix.getrandom(std.mem.asBytes(&seed));
+        io.random(std.mem.asBytes(&seed));
         break :blk seed;
     });
     rand = prng.random();
@@ -233,7 +235,7 @@ pub fn getTermSzLinux() !TermSz {
     //Linux-MacOS Case
 
     //base case - invoked from cmd line
-    const tty_nix = std.fs.File.stdout().handle;
+    const tty_nix = std.Io.File.stdout().handle;
     var winsz = std.c.winsize{ .col = 0, .row = 0, .xpixel = 0, .ypixel = 0 };
     const rv = std.c.ioctl(tty_nix, TIOCGWINSZ, @intFromPtr(&winsz));
     const err = std.posix.errno(rv);
@@ -241,8 +243,8 @@ pub fn getTermSzLinux() !TermSz {
     if (rv >= 0) {
         if (winsz.row == 0 or winsz.col == 0) { // ltty IOCTL failed ie in lldb
             //alt case - invoked from inside lldb
-            var lldb_tty_nix = try std.fs.cwd().openFile("/dev/tty", .{});
-            defer lldb_tty_nix.close();
+            const lldb_tty_nix = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "/dev/tty", .{});
+            defer std.Io.File.close(lldb_tty_nix, io);
 
             var lldb_winsz = std.c.winsize{ .col = 0, .row = 0, .xpixel = 0, .ypixel = 0 };
             const lldb_rv = std.c.ioctl(lldb_tty_nix.handle, TIOCGWINSZ, @intFromPtr(&lldb_winsz));
@@ -578,11 +580,11 @@ pub fn scrollMarquee() !void {
             try emit(line_clear_to_eol);
             try emit(nl);
 
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            try io.sleep(.fromMilliseconds(10), .awake);
         }
 
         //let quote chill for a second
-        std.Thread.sleep(1000 * std.time.ns_per_ms);
+        try io.sleep(.fromMilliseconds(1000), .awake);
 
         //fade out
         fade_idx = fade_len - 1;
@@ -600,7 +602,7 @@ pub fn scrollMarquee() !void {
             try emit(txt[txt_idx * 2 + 1]);
             try emit(line_clear_to_eol);
             try emit(nl);
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            try io.sleep(.fromMilliseconds(10), .awake);
         }
         try emit(nl);
     }
@@ -633,9 +635,9 @@ var bs_sz_min: u64 = 0;
 var bs_sz_max: u64 = 0;
 var bs_sz_avg: u64 = 0;
 var bs_frame_tic: u64 = 0;
-var t_start: i64 = 0;
-var t_now: i64 = 0;
-var t_dur: f64 = 0.0;
+var t_start: Io.Timestamp = undefined;
+var t_now: Io.Timestamp = undefined;
+var t_dur: Io.Duration = undefined;
 var fps: f64 = 0.0;
 
 pub fn initBuf() !void {
@@ -648,7 +650,7 @@ pub fn initBuf() !void {
     const bs_sz: u64 = screen_sz + overflow_sz;
 
     bs = try allocator.alloc(u8, bs_sz * 2);
-    t_start = std.time.milliTimestamp();
+    t_start = Io.Clock.real.now(io);
     resetBuf();
 }
 
@@ -670,7 +672,7 @@ pub fn drawBuf(s: []const u8) void {
 //print buffer to string...can be a decent amount of text!
 pub fn paintBuf() !void {
     try emit(bs[0 .. bs_len - 1]);
-    t_now = std.time.milliTimestamp();
+    t_now = Io.Clock.real.now(io);
     bs_frame_tic += 1;
     if (bs_sz_min == 0) {
         //first frame
@@ -687,8 +689,8 @@ pub fn paintBuf() !void {
         bs_sz_avg = bs_sz_avg * (bs_frame_tic - 1) / bs_frame_tic + bs_len / bs_frame_tic;
     }
 
-    t_dur = @as(f64, @floatFromInt(t_now - t_start)) / 1000.0;
-    fps = @as(f64, @floatFromInt(bs_frame_tic)) / t_dur;
+    t_dur = std.Io.Timestamp.durationTo(t_start, t_now);
+    fps = @as(f64, @floatFromInt(bs_frame_tic)) / @as(f64, @floatFromInt(t_dur.toSeconds()));
 
     try emit(fg[0]);
     try emitFmt("mem: {Bi:.2} min / {Bi:.2} avg / {Bi:.2} max [ {d:.2} fps ]", .{ bs_sz_min, bs_sz_avg, bs_sz_max, fps });
@@ -836,7 +838,11 @@ pub fn showDoomFire() !void {
 // main
 ///////////////////////////////////
 
-pub fn main() anyerror!void {
+pub fn main(init: std.process.Init) anyerror!void {
+    io = init.io;
+    stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
+
     try initTerm();
     defer complete() catch {};
 
