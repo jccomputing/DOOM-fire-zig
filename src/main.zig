@@ -102,7 +102,8 @@ var rand: std.Random = undefined;
 // seed & prep for rng
 pub fn initRNG() !void {
     //rnd setup -- https://ziglearn.org/chapter-2/#random-numbers
-    var prng = std.Random.DefaultPrng.init(blk: {
+    var prng = try allocator.create(std.Random.DefaultPrng);
+    prng.* = std.Random.DefaultPrng.init(blk: {
         var seed: u64 = undefined;
         try std.posix.getrandom(std.mem.asBytes(&seed));
         break :blk seed;
