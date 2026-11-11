@@ -1,0 +1,8 @@
+[tools]
+zig = "0.17.1"
+
+[tasks."build:run:debug"]
+run = "zig build run -Doptimize=Debug"
+
+[tasks."build:run:releasefast"]
+run = "zig build run -Doptimize=ReleaseFast"
